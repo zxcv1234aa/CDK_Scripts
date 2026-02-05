@@ -6,13 +6,25 @@ import requests
 import time
 from loguru import logger
 
+# --- 修复路径问题：确保能找到青龙自带的 notify.py ---
+# 将父目录和当前目录加入系统路径
+current_path = os.path.dirname(os.path.abspath(__file__))
+parent_path = os.path.dirname(current_path)
+sys.path.append(current_path)
+sys.path.append(parent_path)
+# 针对青龙容器的标准路径
+if os.path.exists('/ql/data/scripts'):
+    sys.path.append('/ql/data/scripts')
+
 # 日志格式优化
 logger.remove()
 logger.add(sys.stdout, level='INFO', format="<white>[{time:HH:mm:ss} INF]</white> {message}")
 
 try:
     import notify
+    logger.info("✅ 成功加载通知模块")
 except ImportError:
+    logger.warning("⚠️ 未找到 notify.py 模块，将仅通过控制台输出日志")
     notify = None
 
 class CDKStation:
@@ -52,10 +64,10 @@ class CDKStation:
                 logger.info(f"抽卡次数充足({free_rem})，执行十连...")
                 res = requests.post(f"https://{self.domain}/api/cards/draw", json={"count": 10}, headers=self.headers, timeout=10).json()
                 if res.get("success"):
-                    self.results.append(f"抽卡: 成功")
+                    self.results.append("抽卡: 成功")
             else:
                 logger.info(f"抽卡次数不足({free_rem})，跳过")
-        except Exception: pass
+        except Exception: logger.error("抽卡任务异常")
 
     def lucky_wheel(self):
         """大转盘：循环执行5次"""
@@ -63,22 +75,17 @@ class CDKStation:
             logger.info("开始执行大转盘任务 (5次)...")
             prizes = []
             for i in range(5):
-                # 根据抓包信息，接口地址为 /api/wheel
                 url = f'https://{self.domain}/api/wheel'
-                # 抓包显示为 POST 且 Content-Length 为 0
                 resp = requests.post(url, headers=self.headers, json={}, timeout=15).json()
-                
                 if resp.get("success"):
-                    # 匹配响应结构中的 prize.name
                     prize = resp.get("data", {}).get("prize", {}).get("name", "未知")
                     logger.info(f"第 {i+1} 次转盘成功: {prize}")
                     prizes.append(prize)
-                    time.sleep(3) # 账号内转动延迟
+                    time.sleep(3)
                 else:
                     err = resp.get("error", "次数耗尽或异常")
                     logger.info(f"转盘提前结束: {err}")
                     break
-            
             if prizes:
                 self.results.append(f"转盘: {', '.join(prizes)}")
         except Exception as e:
@@ -95,7 +102,7 @@ class CDKStation:
             payload = {
                 "isAnonymous": True, 
                 "noteContent": "愿生活明朗，万物可爱。", 
-                "amountUsd": 5, # 默认5额度，不需卡片ID
+                "amountUsd": 5,
                 "cardId": None, 
                 "cardIsSP": False
             }
@@ -122,7 +129,6 @@ class CDKStation:
         except Exception: logger.error("捡瓶子异常")
 
 def main():
-    # 允许通过命令行指定任务类型
     task_arg = sys.argv[1] if len(sys.argv) > 1 else "all"
     cookie_env = os.getenv("CDK_COOKIES", "")
     if not cookie_env: 
@@ -136,21 +142,26 @@ def main():
         logger.info(f"--- 开始处理 账号 {i} ---")
         cdk = CDKStation(ck, i)
         
-        # 按参数执行任务逻辑
         if task_arg in ["draw", "all"]: cdk.card_draw()
         if task_arg in ["wheel", "all"]: cdk.lucky_wheel()
         if task_arg in ["throw", "all"]: cdk.drift_throw()
         if task_arg in ["pick", "all"]: cdk.drift_pick()
         
-        if cdk.results: summary.append(f"账号 {i}: " + " | ".join(cdk.results))
+        if cdk.results: 
+            summary.append(f"【账号 {i}】: " + " | ".join(cdk.results))
         
-        # 账号间延迟，防止触发风控
         if i < len(accounts) - 1:
             time.sleep(5)
 
-    # 简报发送逻辑
-    if notify and summary and task_arg in ["all", "draw", "wheel"]:
+    # --- 修复通知判断逻辑 ---
+    # 只要 notify 加载成功且有执行结果（summary不为空），就发送通知
+    if notify and summary:
+        logger.info("📡 正在发送推送通知...")
         notify.send("CDK 任务简报", "\n".join(summary))
+    elif not notify:
+        logger.warning("📢 推送跳过：未加载到 notify.py")
+    elif not summary:
+        logger.info("📢 推送跳过：本次运行无任何产出结果")
 
 if __name__ == "__main__":
     main()
